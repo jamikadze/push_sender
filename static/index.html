@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Push-рассылка</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Push-рассылка</h1>
+  <span id="cfg" class="muted"></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. Текст уведомления</h2>
+    <div class="toolbar">
+      <span class="muted">Кыргызские буквы:</span>
+      <button type="button" class="letter" data-ch="ң">ң</button>
+      <button type="button" class="letter" data-ch="ө">ө</button>
+      <button type="button" class="letter" data-ch="ү">ү</button>
+      <button type="button" class="letter" data-ch="Ң">Ң</button>
+      <button type="button" class="letter" data-ch="Ө">Ө</button>
+      <button type="button" class="letter" data-ch="Ү">Ү</button>
+    </div>
+    <textarea id="message" rows="8" placeholder="Урматтуу абонент! … / Уважаемый абонент! …"></textarea>
+    <div class="row">
+      <span id="textStats" class="muted">0 символов</span>
+      <button type="button" id="fixBtn" class="secondary hidden">Исправить символы автоматически</button>
+    </div>
+    <ul id="textWarnings" class="warnings"></ul>
+  </section>
+
+  <section class="card">
+    <h2>2. Получатели</h2>
+    <label id="drop" class="drop">
+      <input type="file" id="file" accept=".xlsx,.csv,.txt" hidden>
+      <span id="dropText">Перетащите файл сюда или нажмите, чтобы выбрать<br>
+        <small class="muted">.xlsx (рекомендуется), .csv (UTF-8), .txt — логины в первой колонке или в колонке «login»</small></span>
+    </label>
+    <div id="uploadInfo" class="info hidden"></div>
+  </section>
+
+  <section class="card">
+    <h2>3. Проверка и запуск</h2>
+    <div class="row">
+      <input id="testLogin" placeholder="Тестовый логин (свой номер)" inputmode="numeric">
+      <button type="button" id="testBtn" class="secondary">Отправить тест</button>
+      <span id="testResult"></span>
+    </div>
+    <div class="row">
+      <input id="jobName" placeholder="Название рассылки (необязательно)">
+      <button type="button" id="startBtn" disabled>Запустить рассылку</button>
+    </div>
+    <p id="startHint" class="muted">Введите текст и загрузите файл с получателями.</p>
+  </section>
+
+  <section class="card">
+    <h2>Рассылки</h2>
+    <div id="jobs"><p class="muted">Пока нет рассылок.</p></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
