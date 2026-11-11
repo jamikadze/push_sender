@@ -3,6 +3,7 @@
 Каждая рассылка лежит в data/jobs/<id>/:
   job.json     - параметры и счётчики
   logins.txt   - список логинов (по одному на строку)
+  values.json  - только для текста с подстановками: {логин: {колонка: значение}}
   results.csv  - результат по каждому логину (UTF-8 с BOM, разделитель ";",
                  открывается в Excel без «кракозябр»)
 
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from . import template
 from .config import settings
 from .sender import make_client, send_push
 
@@ -48,6 +50,7 @@ class Job:
     started_at: str | None = None
     finished_at: str | None = None
     last_error: str | None = None
+    personalized: bool = False  # текст с подстановками {колонка}
 
     def public(self) -> dict:
         d = asdict(self)
@@ -80,6 +83,11 @@ class JobManager:
     def _read_logins(self, job: Job) -> list[str]:
         text = (self._dir(job.id) / "logins.txt").read_text(encoding="utf-8")
         return [line for line in text.splitlines() if line]
+
+    def read_values(self, job: Job) -> dict[str, dict[str, str]]:
+        if not job.personalized:
+            return {}
+        return json.loads((self._dir(job.id) / "values.json").read_text(encoding="utf-8"))
 
     def _read_results(self, job: Job) -> dict[str, str]:
         path = self._dir(job.id) / "results.csv"
@@ -131,16 +139,21 @@ class JobManager:
             raise KeyError(job_id)
         return job
 
-    def create(self, name: str, message: str, source: str, logins: list[str]) -> Job:
+    def create(self, name: str, message: str, source: str, logins: list[str],
+               values: dict[str, dict[str, str]] | None = None) -> Job:
         job_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         d = self._dir(job_id)
         d.mkdir(parents=True)
         (d / "logins.txt").write_text("\n".join(logins) + "\n", encoding="utf-8")
+        if values:
+            (d / "values.json").write_text(
+                json.dumps({l: values[l] for l in logins}, ensure_ascii=False), encoding="utf-8"
+            )
         with open(d / "results.csv", "w", encoding="utf-8-sig", newline="") as f:
             csv.writer(f, delimiter=";").writerow(["login", "status", "detail", "time"])
         job = Job(
             id=job_id, name=name or source, message=message, source=source,
-            total=len(logins), created_at=_now(),
+            total=len(logins), created_at=_now(), personalized=bool(values),
         )
         self._save(job)
         self.jobs[job.id] = job
@@ -209,6 +222,7 @@ class JobManager:
         try:
             logins = await asyncio.to_thread(self._read_logins, job)
             done = await asyncio.to_thread(self._read_results, job)
+            values = await asyncio.to_thread(self.read_values, job)
             pending = iter([l for l in logins if l not in done])
             logger.info(
                 "Рассылка {} «{}»: всего {}, осталось {}",
@@ -227,7 +241,10 @@ class JobManager:
                         login = next(pending, None)
                         if login is None:
                             return
-                        status, detail = await send_push(client, login, job.message)
+                        text = job.message
+                        if values:
+                            text, _ = template.render(job.message, values.get(login, {}))
+                        status, detail = await send_push(client, login, text)
                         writer.writerow([login, status, detail, _now()])
                         f.flush()
                         setattr(job, status, getattr(job, status) + 1)

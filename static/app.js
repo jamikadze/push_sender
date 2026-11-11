@@ -6,7 +6,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
 ));
 const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
 
-const state = { upload: null, textOk: false };
+const state = { upload: null, textOk: false, previewOk: true, samples: [] };
+const hasFields = (t) => /\{[^{}\s]+\}/.test(t);
 
 async function api(url, opts = {}) {
   const init = { ...opts };
@@ -29,15 +30,19 @@ api("/api/config").then((c) => {
 // ---------- текст ----------
 const msg = $("message");
 
+function insertAtCursor(ch) {
+  const { selectionStart: s, selectionEnd: e, value } = msg;
+  msg.value = value.slice(0, s) + ch + value.slice(e);
+  msg.selectionStart = msg.selectionEnd = s + ch.length;
+  msg.focus();
+  scheduleCheck();
+}
 document.querySelectorAll(".letter").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const ch = btn.dataset.ch;
-    const { selectionStart: s, selectionEnd: e, value } = msg;
-    msg.value = value.slice(0, s) + ch + value.slice(e);
-    msg.selectionStart = msg.selectionEnd = s + ch.length;
-    msg.focus();
-    scheduleCheck();
-  });
+  btn.addEventListener("click", () => insertAtCursor(btn.dataset.ch));
+});
+$("fieldBtns").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-field]");
+  if (btn) insertAtCursor(`{${btn.dataset.field}}`);
 });
 
 let checkTimer = null;
@@ -54,7 +59,7 @@ async function checkText() {
     $("textWarnings").innerHTML = "";
     $("fixBtn").classList.add("hidden");
     state.textOk = false;
-    updateStart();
+    loadPreview();
     return;
   }
   try {
@@ -70,6 +75,36 @@ async function checkText() {
   } catch (e) {
     $("textWarnings").innerHTML = `<li class="error">${esc(e.message)}</li>`;
     state.textOk = false;
+  }
+  loadPreview();
+}
+
+// ---------- предпросмотр текста с подстановками ----------
+async function loadPreview() {
+  const card = $("previewCard");
+  const text = msg.value;
+  state.previewOk = true;
+  state.samples = [];
+  if (!hasFields(text)) {
+    card.classList.add("hidden");
+    updateStart();
+    return;
+  }
+  card.classList.remove("hidden");
+  if (!state.upload) {
+    $("preview").innerHTML = `<span class="muted">В тексте есть подстановки — загрузите файл, чтобы увидеть результат.</span>`;
+    state.previewOk = false;
+    updateStart();
+    return;
+  }
+  try {
+    const r = await api("/api/preview", { json: { upload_id: state.upload.upload_id, message: text } });
+    state.samples = r.samples;
+    $("preview").innerHTML = r.samples.map((s) =>
+      `<div class="muted">${esc(s.login)}</div><div class="sample">${esc(s.text)}</div>`).join("");
+  } catch (e) {
+    $("preview").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    state.previewOk = false;
   }
   updateStart();
 }
@@ -105,6 +140,7 @@ async function uploadFile(file) {
   info.classList.remove("hidden");
   info.innerHTML = `Загрузка и проверка «${esc(file.name)}»…`;
   state.upload = null;
+  showFields([]);
   updateStart();
   const fd = new FormData();
   fd.append("file", file);
@@ -125,19 +161,26 @@ async function uploadFile(file) {
         `</ul></details>`;
     }
     info.innerHTML = html;
+    showFields(r.fields);
   } catch (e) {
     info.innerHTML = `<span class="err">${esc(e.message)}</span>`;
   }
-  updateStart();
+  loadPreview();
+}
+
+function showFields(fields) {
+  $("fieldsBar").classList.toggle("hidden", !fields.length);
+  $("fieldBtns").innerHTML = fields.map((f) =>
+    `<button type="button" class="field" data-field="${esc(f)}">{${esc(f)}}</button>`).join("");
 }
 
 // ---------- тест и запуск ----------
 function updateStart() {
-  const ready = state.textOk && state.upload;
+  const ready = state.textOk && state.upload && state.previewOk;
   $("startBtn").disabled = !ready;
   $("startHint").textContent = ready
     ? `Будет отправлено ${fmt(state.upload.count)} уведомлений.`
-    : "Введите текст и загрузите файл с получателями.";
+    : (state.textOk && state.upload ? "Исправьте ошибку подстановки выше." : "Введите текст и загрузите файл с получателями.");
 }
 
 $("testBtn").addEventListener("click", async () => {
@@ -145,8 +188,11 @@ $("testBtn").addEventListener("click", async () => {
   out.textContent = "Отправка…";
   out.className = "muted";
   try {
-    const r = await api("/api/test-send", { json: { login: $("testLogin").value, message: msg.value } });
-    out.textContent = r.status === "ok" ? `✓ Отправлено на ${r.login}` : `✗ ${r.status}: ${r.detail}`;
+    const r = await api("/api/test-send", {
+      json: { login: $("testLogin").value, message: msg.value, upload_id: state.upload?.upload_id || "" },
+    });
+    out.textContent = (r.status === "ok" ? `✓ Отправлено на ${r.login}` : `✗ ${r.status}: ${r.detail}`) +
+      (r.note ? ` (${r.note})` : "");
     out.className = r.status === "ok" ? "ok" : "err";
   } catch (e) {
     out.textContent = e.message;
@@ -156,8 +202,10 @@ $("testBtn").addEventListener("click", async () => {
 
 $("startBtn").addEventListener("click", async () => {
   if (!state.upload) return;
-  const preview = msg.value.trim().slice(0, 200);
-  if (!confirm(`Отправить уведомление ${fmt(state.upload.count)} получателям?\n\n«${preview}${msg.value.length > 200 ? "…" : ""}»`)) return;
+  const full = state.samples.length ? state.samples[0].text : msg.value.trim();
+  const preview = full.slice(0, 200) + (full.length > 200 ? "…" : "");
+  const label = state.samples.length ? `Пример для ${state.samples[0].login}` : "Текст";
+  if (!confirm(`Отправить уведомление ${fmt(state.upload.count)} получателям?\n\n${label}:\n«${preview}»`)) return;
   $("startBtn").disabled = true;
   try {
     const job = await api("/api/jobs", {
@@ -165,6 +213,8 @@ $("startBtn").addEventListener("click", async () => {
     });
     if (job.last_error) alert(job.last_error);
     state.upload = null;
+    showFields([]);
+    $("previewCard").classList.add("hidden");
     $("uploadInfo").classList.add("hidden");
     $("jobName").value = "";
     loadJobs();

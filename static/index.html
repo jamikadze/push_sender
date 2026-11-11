@@ -24,12 +24,18 @@
       <button type="button" class="letter" data-ch="Ө">Ө</button>
       <button type="button" class="letter" data-ch="Ү">Ү</button>
     </div>
+    <div id="fieldsBar" class="toolbar hidden">
+      <span class="muted">Подставить из файла:</span>
+      <span id="fieldBtns" class="toolbar" style="margin:0"></span>
+    </div>
     <textarea id="message" rows="8" placeholder="Урматтуу абонент! … / Уважаемый абонент! …"></textarea>
     <div class="row">
       <span id="textStats" class="muted">0 символов</span>
       <button type="button" id="fixBtn" class="secondary hidden">Исправить символы автоматически</button>
     </div>
     <ul id="textWarnings" class="warnings"></ul>
+    <p class="muted" style="margin:8px 0 0">Чтобы у каждого был свой текст, вставьте <code>{имя колонки}</code>
+      из файла, например: <code>лицевой счет изменен с {cspot} на {cspotnew}</code></p>
   </section>
 
   <section class="card">
@@ -40,6 +46,11 @@
         <small class="muted">.xlsx (рекомендуется), .csv (UTF-8), .txt — логины в первой колонке или в колонке «login»</small></span>
     </label>
     <div id="uploadInfo" class="info hidden"></div>
+  </section>
+
+  <section id="previewCard" class="card hidden">
+    <h2>Как увидят получатели</h2>
+    <div id="preview"></div>
   </section>
 
   <section class="card">

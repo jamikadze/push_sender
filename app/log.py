@@ -41,6 +41,12 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
+def _not_polling(record) -> bool:
+    """Отсекает успешный опрос списка рассылок (страница дёргает его каждые 1.5-8 с)."""
+    msg = record["message"]
+    return not ('"GET /api/jobs HTTP/' in msg and msg.endswith(" 200"))
+
+
 _configured = False
 
 
@@ -60,6 +66,7 @@ def setup_logging() -> None:
         LOG_DIR / "app_{time:YYYY-MM-DD}.log",
         level=settings.LOG_LEVEL,
         format=FILE_FORMAT,
+        filter=_not_polling,
         rotation="00:00",
         retention=f"{settings.LOG_RETENTION_DAYS} days",
         encoding="utf-8",

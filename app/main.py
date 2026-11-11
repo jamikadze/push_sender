@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
 
-from . import text_check
+from . import template, text_check
 from .config import BASE_DIR, settings
 from .jobs import JobConflict, JobManager
 from .log import setup_logging
@@ -59,6 +59,12 @@ class TextIn(BaseModel):
 class TestSendIn(BaseModel):
     login: str
     message: str
+    upload_id: str = ""  # нужен, если в тексте есть подстановки {колонка}
+
+
+class PreviewIn(BaseModel):
+    upload_id: str
+    message: str
 
 
 class JobIn(BaseModel):
@@ -91,6 +97,49 @@ def _upload_path(upload_id: str) -> Path:
     if not upload_id.isalnum():
         raise HTTPException(400, "Некорректный upload_id")
     return UPLOADS_DIR / f"{upload_id}.json"
+
+
+def _load_upload(upload_id: str) -> dict:
+    path = _upload_path(upload_id)
+    if not path.exists():
+        raise HTTPException(404, "Файл получателей не найден, загрузите его заново")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _personalize(message: str, payload: dict) -> dict[str, dict[str, str]] | None:
+    """Для текста с {колонка} готовит значения по каждому логину.
+
+    None - подстановок в тексте нет. Если колонки нет в файле или у кого-то
+    пустое значение - ошибка 400: лучше исправить файл, чем отправить
+    «ваш счёт изменён с  на ».
+    """
+    names = template.placeholders(message)
+    if not names:
+        return None
+    fields = payload.get("fields") or []
+    missing = template.unknown(message, fields)
+    if missing:
+        have = ", ".join("{" + f + "}" for f in fields) or "нет (в первой строке файла нет заголовков)"
+        raise HTTPException(
+            400, f"В файле нет колонок: {', '.join('{' + m + '}' for m in missing)}. Есть: {have}"
+        )
+    rows = payload.get("values") or {}
+    values: dict[str, dict[str, str]] = {}
+    bad: list[str] = []
+    for login in payload["logins"]:
+        v = template.row_values(rows.get(login, {}), names)
+        _, empty = template.render(message, v)
+        if empty:
+            bad.append(f"{login} ({', '.join(empty)})")
+        values[login] = v
+    if bad:
+        raise HTTPException(
+            400,
+            f"Пустые значения для подстановки у {len(bad)} получателей: "
+            + "; ".join(bad[:10]) + (" …" if len(bad) > 10 else "")
+            + ". Заполните их в файле или уберите эти строки.",
+        )
+    return values
 
 
 # ---------- страницы ----------
@@ -140,7 +189,10 @@ async def upload(file: UploadFile = File(...)):
     )
 
     upload_id = uuid.uuid4().hex
-    payload = {"source": file.filename, "logins": res.logins}
+    payload = {
+        "source": file.filename, "logins": res.logins,
+        "fields": res.fields, "values": res.values,
+    }
     _upload_path(upload_id).write_text(json.dumps(payload), encoding="utf-8")
     return {
         "upload_id": upload_id,
@@ -154,7 +206,23 @@ async def upload(file: UploadFile = File(...)):
         "encoding": res.encoding,
         "sheets": res.sheets,
         "sample": res.logins[:5],
+        "fields": res.fields,
     }
+
+
+@app.post("/api/preview")
+async def preview(body: PreviewIn):
+    """Как будет выглядеть текст у первых получателей (для текста с подстановками)."""
+    message = text_check.normalize(body.message)
+    payload = _load_upload(body.upload_id)
+    values = _personalize(message, payload)
+    if values is None:
+        return {"personalized": False, "samples": []}
+    samples = [
+        {"login": l, "text": template.render(message, values[l])[0]}
+        for l in payload["logins"][:3]
+    ]
+    return {"personalized": True, "samples": samples}
 
 
 # ---------- тестовая отправка ----------
@@ -164,10 +232,21 @@ async def test_send(body: TestSendIn):
     login = "".join(c for c in body.login if c.isdigit())
     if not (settings.MIN_LOGIN_DIGITS <= len(login) <= settings.MAX_LOGIN_DIGITS):
         raise HTTPException(400, "Некорректный логин")
+    note = ""
+    if template.placeholders(message):
+        if not body.upload_id:
+            raise HTTPException(400, "В тексте есть подстановки {колонка} - сначала загрузите файл")
+        payload = _load_upload(body.upload_id)
+        values = _personalize(message, payload)
+        # своя строка, если тестовый логин есть в файле, иначе значения первой строки
+        source_login = login if login in values else payload["logins"][0]
+        if source_login != login:
+            note = f"значения взяты из строки логина {source_login}"
+        message, _ = template.render(message, values[source_login])
     async with make_client() as client:
         status, detail = await send_push(client, login, message)
     logger.info("Тестовая отправка на {}: {} {}", login, status, detail)
-    return {"login": login, "status": status, "detail": detail}
+    return {"login": login, "status": status, "detail": detail, "text": message, "note": note}
 
 
 # ---------- рассылки ----------
@@ -179,12 +258,10 @@ async def list_jobs():
 @app.post("/api/jobs")
 async def create_job(body: JobIn):
     message = _check_message(body.message)
-    path = _upload_path(body.upload_id)
-    if not path.exists():
-        raise HTTPException(404, "Файл получателей не найден, загрузите его заново")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    job = manager.create(body.name.strip(), message, payload["source"], payload["logins"])
-    path.unlink(missing_ok=True)
+    payload = _load_upload(body.upload_id)
+    values = _personalize(message, payload)
+    job = manager.create(body.name.strip(), message, payload["source"], payload["logins"], values)
+    _upload_path(body.upload_id).unlink(missing_ok=True)
     if body.start:
         try:
             manager.start(job.id)
@@ -227,7 +304,9 @@ async def retry_job(job_id: str, body: RetryIn):
     logins = manager.failed_logins(job, body.include_unknown)
     if not logins:
         raise HTTPException(400, "Нет логинов для повтора")
-    new = manager.create(f"{job.name} — повтор", job.message, job.source, logins)
+    new = manager.create(
+        f"{job.name} — повтор", job.message, job.source, logins, manager.read_values(job) or None
+    )
     return new.public()
 
 

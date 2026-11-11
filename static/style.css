@@ -61,6 +61,9 @@ button.small { padding: 5px 10px; font-size: 13px; }
 .drop.over, .drop:hover { border-color: var(--accent); background: #f0f6ff; }
 .info { margin-top: 12px; font-size: 14px; line-height: 1.6; }
 .info b { font-size: 16px; }
+.field { background: #f0f6ff; color: var(--accent); border-color: var(--border); font-size: 13px; padding: 4px 10px; }
+.sample { border-left: 3px solid var(--accent); padding: 6px 10px; margin: 8px 0; white-space: pre-wrap; font-size: 14px; }
+code { background: #eef1f5; padding: 1px 4px; border-radius: 4px; }
 
 .job { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .job-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }

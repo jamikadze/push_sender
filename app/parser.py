@@ -33,6 +33,9 @@ class ParseResult:
     column: str = ""
     encoding: str = ""
     sheets: int = 0
+    # Колонки из строки заголовка и значения по каждому логину - для подстановок в текст
+    fields: list[str] = field(default_factory=list)
+    values: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def _cell_to_str(value) -> str:
@@ -64,7 +67,13 @@ class _Collector:
         self.res = ParseResult()
         self._seen: set[str] = set()
 
-    def add(self, raw, row_no: int, sheet: str = "") -> None:
+    def add_fields(self, headers: list[str]) -> None:
+        for h in headers:
+            if h and h not in self.res.fields:
+                self.res.fields.append(h)
+
+    def add(self, raw, row_no: int, sheet: str = "", headers: list[str] | None = None,
+            row=None) -> None:
         s = _cell_to_str(raw)
         if not s:
             return
@@ -82,6 +91,15 @@ class _Collector:
             return
         self._seen.add(digits)
         self.res.logins.append(digits)
+        if headers and row is not None:
+            self.res.values[digits] = {
+                h: _cell_to_str(row[i]) if i < len(row) else ""
+                for i, h in enumerate(headers) if h
+            }
+
+
+def _headers(first_row, has_header: bool) -> list[str]:
+    return [_cell_to_str(v) for v in first_row] if has_header else []
 
 
 def _parse_xlsx(data: bytes) -> ParseResult:
@@ -100,11 +118,13 @@ def _parse_xlsx(data: bytes) -> ParseResult:
             idx, has_header, name = _find_column(list(first))
             if not col.res.column:
                 col.res.column = name
+            headers = _headers(first, has_header)
+            col.add_fields(headers)
             if not has_header:
                 col.add(first[idx] if idx < len(first) else None, 1, ws.title)
             for n, row in enumerate(rows, start=2):
                 if row and idx < len(row):
-                    col.add(row[idx], n, ws.title)
+                    col.add(row[idx], n, ws.title, headers, row)
     finally:
         wb.close()
     col.res.encoding = "xlsx (Unicode)"
@@ -136,11 +156,13 @@ def _parse_csv(data: bytes) -> ParseResult:
     idx, has_header, name = _find_column(first)
     col.res.column = name
     col.res.sheets = 1
+    headers = _headers(first, has_header)
+    col.add_fields(headers)
     if not has_header:
         col.add(first[idx] if idx < len(first) else None, 1)
     for n, row in enumerate(reader, start=2):
         if row and idx < len(row):
-            col.add(row[idx], n)
+            col.add(row[idx], n, "", headers, row)
     col.res.encoding = enc
     return col.res
 
